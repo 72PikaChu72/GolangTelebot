@@ -1,64 +1,94 @@
 package main
 
 import (
+	"io"
+	"io/ioutil"
+	"net/http"
 	"os"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+func sendStartMessage(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	var msg tgbotapi.MessageConfig = tgbotapi.NewMessage(update.Message.Chat.ID, "Привет, я - бот файлохранитель")
+	msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("Покажи мне файлы которые лежат в моей папке")))
+	msg.ReplyToMessageID = update.Message.MessageID
+	bot.Send(msg)
+}
+func sendMyFiles(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	files, err := ioutil.ReadDir("Resource/" + update.Message.From.UserName)
+	if err != nil {
+		var msg tgbotapi.MessageConfig = tgbotapi.NewMessage(update.Message.Chat.ID, "У вас нет файлов")
+		bot.Send(msg)
+		sendStartMessage(bot, update)
+	}
+	var msg tgbotapi.MessageConfig = tgbotapi.NewMessage(update.Message.Chat.ID, "Список ваших файлов:")
+	var Buttons []tgbotapi.KeyboardButton
+	for _, file := range files {
+		Buttons = append(Buttons, tgbotapi.NewKeyboardButton(file.Name()))
+	}
+	msg.ReplyToMessageID = update.Message.MessageID
+	msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(Buttons)
+	bot.Send(msg)
+}
+func sendFile(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	files, _ := ioutil.ReadDir("Resource/" + update.Message.From.UserName)
+	for _, file := range files {
+		if file.Name() == update.Message.Text {
+			filePath := "Resource/" + update.Message.From.UserName + "/" + file.Name()
+			fileBytes, _ := ioutil.ReadFile(filePath)
+			msg := tgbotapi.NewDocument(update.Message.Chat.ID, tgbotapi.FileBytes{
+				Name:  file.Name(),
+				Bytes: fileBytes,
+			})
+			msg.ReplyToMessageID = update.Message.MessageID
+			bot.Send(msg)
+			return
+		}
+	}
+	var msg tgbotapi.MessageConfig = tgbotapi.NewMessage(update.Message.Chat.ID, "Файл не найден")
+	bot.Send(msg)
+	sendStartMessage(bot, update)
+}
+func getFile(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	fileID := update.Message.Document.FileID
+	fileName := update.Message.Document.FileName
+
+	fileURL, _ := bot.GetFileDirectURL(fileID)
+
+	response, _ := http.Get(fileURL)
+	defer response.Body.Close()
+
+	_ = os.MkdirAll("Resource/"+update.Message.From.UserName, 0755)
+	filePath := "Resource/" + update.Message.From.UserName + "/" + fileName
+	file, _ := os.Create(filePath)
+	_, _ = io.Copy(file, response.Body)
+	sendStartMessage(bot, update)
+
+}
 func main() {
-	os.Setenv("TELEGRAM_APITOKEN", "6152179096:AAFianK5jeGqZjjThf3Vq_yYh4oXzcCveiU")
 	bot, err := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
 	if err != nil {
 		panic(err)
 	}
-
 	bot.Debug = true
 
-	// Create a new UpdateConfig struct with an offset of 0. Offsets are used
-	// to make sure Telegram knows we've handled previous values and we don't
-	// need them repeated.
 	updateConfig := tgbotapi.NewUpdate(0)
-
-	// Tell Telegram we should wait up to 30 seconds on each request for an
-	// update. This way we can get information just as quickly as making many
-	// frequent requests without having to send nearly as many.
 	updateConfig.Timeout = 30
-
-	// Start polling Telegram for updates.
 	updates := bot.GetUpdatesChan(updateConfig)
 
-	// Let's go through each update that we're getting from Telegram.
 	for update := range updates {
-		// Telegram can send many types of updates depending on what your Bot
-		// is up to. We only want to look at messages for now, so we can
-		// discard any other updates.
 		if update.Message == nil {
 			continue
 		}
-		var msg tgbotapi.MessageConfig
-		// Now that we know we've gotten a new message, we can construct a
-		// reply! We'll take the Chat ID and Text from the incoming message
-		// and use it to create a new message.
-		if update.Message.Text == "Привет" {
-			msg = tgbotapi.NewMessage(update.Message.Chat.ID, "Привет")
-
-		} else {
-
-			msg = tgbotapi.NewMessage(update.Message.Chat.ID, "Не привет")
-		}
-		// We'll also say that this message is a reply to the previous message.
-		// For any other specifications than Chat ID or Text, you'll need to
-		// set fields on the `MessageConfig`.
-		msg.ReplyToMessageID = update.Message.MessageID
-
-		// Okay, we're sending our message off! We don't care about the message
-		// we just sent, so we'll discard it.
-		if _, err := bot.Send(msg); err != nil {
-			// Note that panics are a bad way to handle errors. Telegram can
-			// have service outages or network errors, you should retry sending
-			// messages or more gracefully handle failures.
-			panic(err)
+		if update.Message.Text == "/start" {
+			sendStartMessage(bot, update)
+		} else if update.Message.Text == "Покажи мне файлы которые лежат в моей папке" {
+			sendMyFiles(bot, update)
+		} else if update.Message.Document == nil {
+			sendFile(bot, update)
+		} else if update.Message.Document != nil {
+			getFile(bot, update)
 		}
 	}
 }
